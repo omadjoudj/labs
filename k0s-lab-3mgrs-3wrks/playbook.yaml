@@ -88,7 +88,7 @@
       loop: "{{ vms }}"
 
     - name: Resize VM disks
-      command: "qemu-img resize {{ libvirt_pool_dir }}/{{ item.name }}.qcow2 20G"
+      command: "qemu-img resize {{ libvirt_pool_dir }}/{{ item.name }}.qcow2 80G"
       loop: "{{ vms }}"
       register: resize_result
       changed_when: "'Image resized' in resize_result.stdout"
@@ -152,8 +152,8 @@
       command: >
         virt-install
         --name {{ item.name }}
-        --ram 2048
-        --vcpus 2
+        --ram 8192
+        --vcpus 4
         --os-variant ubuntu22.04
         --disk path={{ libvirt_pool_dir }}/{{ item.name }}.qcow2,format=qcow2
         --disk path={{ libvirt_pool_dir }}/{{ item.name }}-cidata.iso,device=cdrom
