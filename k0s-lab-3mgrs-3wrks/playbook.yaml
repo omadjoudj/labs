@@ -9,6 +9,7 @@
     base_image_name: "noble-server-cloudimg-amd64.img"
     ssh_public_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
     k0sctl_version: "v0.28.0"
+    k0s_version: "v1.34.3+k0s.0"
     kubectl_version: "v1.35.0"
     helm_version: "v4.1.0"
 
@@ -174,3 +175,49 @@
       with_nested:
         - "{{ vms }}"
         - [ 'user_data', 'network_config', 'meta_data' ]
+
+    - name: Wait for VMs to become reachable via SSH
+      wait_for:
+        host: "192.168.122.{{ item.id }}"
+        port: 22
+        timeout: 300
+        search_regex: OpenSSH
+      loop: "{{ vms }}"
+
+    - name: Generate k0sctl.yaml dynamically (Corrected Indentation)
+      copy:
+        dest: "k0sctl.yaml"
+        content: |
+          apiVersion: k0sctl.k0sproject.io/v1beta1
+          kind: Cluster
+          metadata:
+            name: lab
+          spec:
+            k0s:
+              version: {{k0s_version}}
+            hosts:
+          {% for vm in vms %}
+              - role: {{ 'controller+worker' if 'mgr' in vm.name else 'worker' }}
+                ssh:
+                  address: 192.168.122.{{ vm.id }}
+                  user: root
+                  port: 22
+                  keyPath: {{ ansible_env.HOME }}/.ssh/id_rsa
+          {% endfor %}
+
+
+    - name: Apply k0s cluster configuration
+      command: k0sctl apply --config k0sctl.yaml --no-wait
+      register: k0s_output
+      changed_when: "'no changes' not in k0s_output.stdout"
+
+    - name: Fetch kubeconfig to local directory
+      command: k0sctl kubeconfig --config k0sctl.yaml
+      register: kubeconfig_content
+      changed_when: false
+
+    - name: Save kubeconfig file
+      copy:
+        content: "{{ kubeconfig_content.stdout }}"
+        dest: "./lab.kubeconfig"
+        mode: '0600'
