@@ -9,6 +9,8 @@
     base_image_name: "noble-server-cloudimg-amd64.img"
     ssh_public_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
     k0sctl_version: "v0.28.0"
+    kubectl_version: "v1.35.0"
+    helm_version: "v4.1.0"
 
     gateway: "192.168.122.1"
     nameserver: "192.168.122.1"
@@ -41,7 +43,6 @@
         state: started
         enabled: yes
 
-    # --- TASK 2: Install k0sctl ---
     - name: Install k0sctl binary
       get_url:
         url: "https://github.com/k0sproject/k0sctl/releases/download/{{ k0sctl_version }}/k0sctl-linux-amd64"
@@ -49,8 +50,27 @@
         mode: '0755' # Make it executable
         owner: root
         group: root
+    - name: Install kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+        dest: "/usr/local/bin/kubectl"
+        mode: '0755'
 
-    # --- Existing Provisioning Tasks Below ---
+    - name: Install Helm
+      block:
+        - name: Download and unarchive Helm
+          unarchive:
+            src: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+            dest: "/tmp"
+            remote_src: yes
+            creates: "/tmp/linux-amd64/helm"
+
+        - name: Move Helm binary to path
+          copy:
+            src: "/tmp/linux-amd64/helm"
+            dest: "/usr/local/bin/helm"
+            mode: '0755'
+            remote_src: yes
 
     - name: Download Base Image
       get_url:
