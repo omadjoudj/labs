@@ -1,0 +1,156 @@
+---
+- name: Provision Ubuntu VMs for K0s cluster lab
+  hosts: localhost
+  connection: local
+  become: true
+  vars:
+    libvirt_pool_dir: "/var/lib/libvirt/images"
+    image_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    base_image_name: "noble-server-cloudimg-amd64.img"
+    ssh_public_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+    k0sctl_version: "v0.28.0"
+
+    gateway: "192.168.122.1"
+    nameserver: "192.168.122.1"
+
+    vms:
+      - { name: mgr1, id: 10 }
+      - { name: mgr2, id: 11 }
+      - { name: mgr3, id: 12 }
+      - { name: worker1, id: 13 }
+      - { name: worker2, id: 14 }
+      - { name: worker3, id: 15 }
+
+  tasks:
+    - name: Install KVM, Libvirt, QEMU, and tools
+      apt:
+        name:
+          - qemu-kvm
+          - libvirt-daemon-system
+          - libvirt-clients
+          - bridge-utils
+          - virtinst
+          - genisoimage
+          - qemu-utils
+        state: present
+        update_cache: yes
+
+    - name: Ensure Libvirt service is started and enabled
+      service:
+        name: libvirtd
+        state: started
+        enabled: yes
+
+    # --- TASK 2: Install k0sctl ---
+    - name: Install k0sctl binary
+      get_url:
+        url: "https://github.com/k0sproject/k0sctl/releases/download/{{ k0sctl_version }}/k0sctl-linux-amd64"
+        dest: "/usr/local/bin/k0sctl"
+        mode: '0755' # Make it executable
+        owner: root
+        group: root
+
+    # --- Existing Provisioning Tasks Below ---
+
+    - name: Download Base Image
+      get_url:
+        url: "{{ image_url }}"
+        dest: "{{ libvirt_pool_dir }}/{{ base_image_name }}"
+        mode: '0644'
+        force: no
+
+    - name: Create VM disks
+      ansible.builtin.copy:
+        src: "{{ libvirt_pool_dir }}/{{ base_image_name }}"
+        dest: "{{ libvirt_pool_dir }}/{{ item.name }}.qcow2"
+        force: no
+        remote_src: yes
+      loop: "{{ vms }}"
+
+    - name: Resize VM disks
+      command: "qemu-img resize {{ libvirt_pool_dir }}/{{ item.name }}.qcow2 20G"
+      loop: "{{ vms }}"
+      register: resize_result
+      changed_when: "'Image resized' in resize_result.stdout"
+
+    - name: Create Cloud-Init Meta Data
+      ansible.builtin.copy:
+        dest: "/tmp/{{ item.name }}_meta_data"
+        content: |
+          instance-id: {{ item.name }}
+          local-hostname: {{ item.name }}
+      loop: "{{ vms }}"
+
+    - name: Create Cloud-Init User Data
+      ansible.builtin.copy:
+        dest: "/tmp/{{ item.name }}_user_data"
+        content: |
+          #cloud-config
+          hostname: {{ item.name }}
+          disable_root: false
+          ssh_pwauth: true
+          users:
+            - name: root
+              ssh_authorized_keys:
+                - {{ ssh_public_key }}
+          ssh_deletekeys: true
+          growpart:
+            mode: auto
+            devices: ['/']
+      loop: "{{ vms }}"
+
+    - name: Create Cloud-Init Network Config
+      ansible.builtin.copy:
+        dest: "/tmp/{{ item.name }}_network_config"
+        content: |
+          version: 2
+          ethernets:
+            enp1s0:
+              dhcp4: false
+              addresses:
+                - 192.168.122.{{ item.id }}/24
+              routes:
+                - to: 0.0.0.0/0
+                  via: {{ gateway }}
+              nameservers:
+                addresses: [{{ nameserver }}]
+      loop: "{{ vms }}"
+
+    - name: Generate Cloud-Init ISOs
+      command: >
+        genisoimage -output {{ libvirt_pool_dir }}/{{ item.name }}-cidata.iso
+        -volid cidata -joliet -rock
+        -graft-points
+        user-data=/tmp/{{ item.name }}_user_data
+        meta-data=/tmp/{{ item.name }}_meta_data
+        network-config=/tmp/{{ item.name }}_network_config
+      loop: "{{ vms }}"
+      args:
+        creates: "{{ libvirt_pool_dir }}/{{ item.name }}-cidata.iso"
+
+    - name: Provision VMs
+      command: >
+        virt-install
+        --name {{ item.name }}
+        --ram 2048
+        --vcpus 2
+        --os-variant ubuntu22.04
+        --disk path={{ libvirt_pool_dir }}/{{ item.name }}.qcow2,format=qcow2
+        --disk path={{ libvirt_pool_dir }}/{{ item.name }}-cidata.iso,device=cdrom
+        --network network=default,model=virtio
+        --graphics none
+        --noautoconsole
+        --import
+      loop: "{{ vms }}"
+      register: virt_install_result
+      failed_when:
+        - virt_install_result.rc != 0
+        - "'already exists' not in virt_install_result.stderr"
+
+    - name: Cleanup config files
+      file:
+        path: "/tmp/{{ item.0.name }}_{{ item.1 }}"
+        state: absent
+      with_nested:
+        - "{{ vms }}"
+        - [ 'user_data', 'network_config', 'meta_data' ]
