@@ -184,7 +184,7 @@
         search_regex: OpenSSH
       loop: "{{ vms }}"
 
-    - name: Generate k0sctl.yaml dynamically (Corrected Indentation)
+    - name: Generate k0sctl.yaml dynamically
       copy:
         dest: "k0sctl.yaml"
         content: |
